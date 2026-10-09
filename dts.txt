@@ -1,0 +1,332 @@
+Devicetree, kernel bindings, and dt-schema
+==========================================
+
+1. What is maintained in the Linux kernel tree
+----------------------------------------------
+
+DTS/DTSI files are maintained with the Linux kernel:
+
+  arch/*/boot/dts/**/*.dts
+  arch/*/boot/dts/**/*.dtsi
+
+They describe the actual SoC and board hardware.
+
+Device-specific binding YAML files are also maintained with the Linux kernel:
+
+  Documentation/devicetree/bindings/**/*.yaml
+
+Examples:
+
+  Documentation/devicetree/bindings/net/qcom,ethqos.yaml
+  Documentation/devicetree/bindings/pinctrl/qcom,nord-tlmm.yaml
+  Documentation/devicetree/bindings/media/qcom,venus-common.yaml
+
+These describe what a specific hardware node should look like and what Linux
+drivers expect.
+
+The kernel also carries DTC-related build scripts:
+
+  scripts/dtc/
+
+This directory is kernel's integrated DTC tooling. It is not maintained by
+dt-schema.
+
+2. What is maintained in dt-schema
+----------------------------------
+
+dt-schema is a separate project:
+
+  https://github.com/devicetree-org/dt-schema.git
+
+It is installed as the Python package "dtschema" and provides tools such as:
+
+  dt-doc-validate
+  dt-mk-schema
+  dt-validate
+  dt-extract-example
+  dt-check-compatible
+
+Kernel commands such as:
+
+  make dt_binding_check
+  make dtbs_check
+  make CHECK_DTBS=1 qcom/foo.dtb
+
+call these tools from PATH.
+
+dt-schema also provides common Devicetree schemas, such as:
+
+  dt-core.yaml
+  types.yaml
+  iommu/iommu.yaml
+  gpio/gpio.yaml
+  clock/clock.yaml
+  i2c/i2c-controller.yaml
+  reserved-memory/reserved-memory.yaml
+
+These define common property types and common Devicetree rules.
+
+3. Why common rules are not kept only in the kernel
+--------------------------------------------------
+
+Devicetree is not Linux-private. It is a hardware description format used by
+firmware, bootloaders, hypervisors, Linux, BSD, RTOSes, and other software.
+
+A DTB may be consumed by several stages:
+
+  Boot ROM / firmware
+  -> TF-A / U-Boot / EDK2
+  -> Linux / BSD / RTOS / hypervisor
+
+Common properties such as:
+
+  reg
+  interrupts
+  clocks
+  resets
+  iommus
+  dma-ranges
+  iommu-ranges
+  reserved-memory
+
+are not Linux-driver-specific. Their common type and decoding rules belong in
+dt-schema.
+
+dt-schema is also a Python-based toolchain using external Python packages. The
+kernel avoids vendoring that dependency stack and instead calls the installed
+tools.
+
+4. Division of responsibility
+-----------------------------
+
+dt-schema:
+
+  Defines Devicetree common rules, common property types, and validation tools.
+
+Kernel binding YAML:
+
+  Defines a specific device binding, compatible strings, required properties,
+  and device-specific limits.
+
+DTS/DTSI:
+
+  Instantiates the real hardware nodes for a board or SoC.
+
+Example:
+
+  DTS:
+    iommu-ranges = <0x25800000 0xda600000>;
+
+  dt-schema:
+    Defines "iommu-ranges" as a common uint32 matrix and knows how to decode it
+    from DTB bytes.
+
+  Documentation/devicetree/bindings/media/qcom,venus-common.yaml:
+    Says the Qualcomm Venus non-pixel and secure-non-pixel context-bank
+    subnodes require "iommu-ranges" and can restrict the number of ranges.
+
+5. When a dt-schema change is needed
+------------------------------------
+
+Change dt-schema when adding or standardizing a common property or common rule,
+especially when it is not private to one device binding.
+
+Typical cases:
+
+  A new cross-device or cross-vendor property is added.
+  A property type needs to be defined globally.
+  The validator must know how to decode a property from DTB bytes.
+  Several bindings would otherwise duplicate the same property type rule.
+
+Examples of common properties:
+
+  iommus
+  iommu-ranges
+  dma-ranges
+  interconnects
+  power-domains
+  wakeup-source
+  reserved-memory
+
+6. When a kernel binding or DTS change is enough
+------------------------------------------------
+
+Change kernel DTS/DTSI when adding or changing actual board or SoC nodes.
+
+Change kernel binding YAML when adding a concrete compatible string, documenting
+a device-specific property, or constraining how a common property is used by a
+specific device.
+
+Examples:
+
+  compatible = "qcom,nord-ethqos";
+
+belongs in the kernel binding.
+
+  qcom,some-private-property = <1>;
+
+belongs in the specific kernel binding.
+
+  iommu-ranges:
+    maxItems: 1
+
+belongs in the specific kernel binding if that hardware only supports one range.
+
+7. This iommu-ranges issue
+--------------------------
+
+The DTS used:
+
+  iommu-ranges = <0x25800000 0xda600000>;
+
+Old dt-schema did not define the common "iommu-ranges" property. During DTB
+validation, the property stayed as raw bytes:
+
+  b'%\x80\x00\x00\xda`\x00\x00'
+
+and dt-core.yaml rejected it as the wrong type.
+
+Newer dt-schema defines "iommu-ranges" in:
+
+  dtschema/schemas/iommu/iommu.yaml
+
+as a uint32 matrix. After updating dt-schema, the validator decodes the DTB
+bytes as a list of IOVA ranges.
+
+In the device-specific binding:
+
+  iommu-ranges:
+    maxItems: 1
+
+means at most one range entry. It does not mean one u32 cell. For:
+
+  iommu-ranges = <0x25800000 0xda600000>;
+
+the one range entry is base address plus size.
+
+8. Patch handling
+-----------------
+
+DTS and Linux binding changes are sent as Linux kernel patches.
+
+dt-schema changes are sent separately to:
+
+  https://github.com/devicetree-org/dt-schema.git
+
+If a kernel patch depends on a new dt-schema change, mention the dependency in
+the cover letter, for example:
+
+  Validation depends on devicetree-org/dt-schema PR 207 or a newer dtschema
+  release containing the iommu-ranges common schema.
+
+Do not include the dt-schema patch inside the Linux kernel patch series.
+
+9. Useful validation commands
+-----------------------------
+
+Full binding validation:
+
+  make O=out -j192 dt_binding_check
+
+Check only specific DTBs:
+
+  make O=out -j192 CHECK_DTBS=1 \
+    qcom/nord-rrd.dtb qcom/nord-ride-embedded.dtb
+
+Full DTB check for all configured DTBs:
+
+  make O=out -j192 dtbs_check
+
+Note:
+
+  dtbs_check builds/checks all configured DTBs.
+  CHECK_DTBS=1 with explicit .dtb targets is the way to do targeted DTB checks.
+
+After updating dt-schema, stale generated schema/example files may need to be
+removed:
+
+  rm -f out/Documentation/devicetree/bindings/processed-schema.json
+  find out/Documentation/devicetree/bindings -name '*.example.dts' -o -name '*.example.dtb' -delete
+
+10. Upstream DTC, kernel scripts/dtc, and dt-schema
+---------------------------------------------------
+
+Upstream DTC means the standalone Device Tree Compiler project:
+
+  https://git.kernel.org/pub/scm/utils/dtc/dtc.git
+
+It maintains low-level Devicetree tools and libraries such as:
+
+  dtc
+  libfdt
+  fdtoverlay
+  fdtget
+  fdtput
+
+DTC's job is to parse and compile Devicetree source:
+
+  .dts/.dtsi -> .dtb
+
+It handles syntax, labels, phandles, cell syntax, overlays, and the DTB binary
+format.
+
+The Linux kernel carries a copy/snapshot of DTC under:
+
+  scripts/dtc/
+
+This lets kernel builds use known DTC behavior instead of depending on whatever
+system dtc version is installed. The kernel copy also contains kernel build
+integration and helper scripts, such as:
+
+  scripts/dtc/dt-extract-compatibles
+  scripts/dtc/dt-check-style
+
+Kernel DTS/DTSI files are still maintained by the Linux kernel, not by upstream
+DTC:
+
+  arch/*/boot/dts/**/*.dts
+  arch/*/boot/dts/**/*.dtsi
+
+So a change to:
+
+  arch/arm64/boot/dts/qcom/nord-*.dts
+
+is a Linux kernel patch, not a DTC patch.
+
+DTC and dt-schema are separate because they solve different problems.
+
+DTC is the compiler/parser:
+
+  Can this DTS be parsed?
+  Can it be compiled into a DTB?
+  Are labels, phandles, cells, overlays, and binary DTB format valid?
+
+dt-schema is the semantic validator:
+
+  Does this compatible have a binding?
+  Are required properties present?
+  Is this property a string, uint32, uint32-array, phandle-array, or matrix?
+  Are the number of clocks, interrupts, iommus, reg entries, etc. correct?
+  Are child nodes allowed by the binding?
+
+The relationship is:
+
+  DTC       = compiler / parser / binary format tooling
+  dt-schema = binding schema validator / type checker / lint layer
+
+They also have different implementation and usage constraints:
+
+  DTC is C code with libfdt and is used by kernels, bootloaders, firmware, and
+  low-level tools.
+
+  dt-schema is Python-based and depends on packages such as jsonschema,
+  ruamel.yaml, and pylibfdt. It is mainly a development and review-time
+  validation tool, not required to generate a DTB.
+
+Typical flow:
+
+  .dts/.dtsi
+    -- DTC -->
+  .dtb
+    -- dt-schema / dt-validate -->
+  schema validation result
